@@ -33,10 +33,7 @@ library(tidyverse)
 library(lubridate)
 library(purrr)
 library(sqldf)
-#USER_ID_hash, cal_n_session, cal_uniquedisp_userpref, cal_uniquedisp_usersmallarea, cal_uniquedisp_userpref, cal_TotalPurchaseInstances,  cal_daysregtobuy
-#x <- Updated %>% 
-# group_by(USER_ID_hash) %>% 
-#  slice(1) %>% ungroup()
+
 
 ```
 
@@ -134,14 +131,19 @@ data2 <- left_join(purchases.full, data, by ="USER_ID_hash") %>% group_by(USER_I
  select(USER_ID_hash,SessionDur) 
 
 data3 <- data2 %>% group_by(USER_ID_hash) %>% summarise(totaltime_peruser = sum(SessionDur))
+
+
 UserSpecificValues <- data %>% left_join(w, by = "USER_ID_hash") %>% 
   left_join(data3, by = "USER_ID_hash") %>% 
   left_join(q, by = "USER_ID_hash")
 
-#write.csv(UserSpecificValues, file = "useruniquecomputation.csv",row.names = F)
+write.csv(UserSpecificValues, file = "useruniquecomputation.csv",row.names = F)
 move.back <- c(2,3,10,11 ,15:17 ,21 ,22 ,24, 25, 36,37,38)
 purchases.full %>% filter(ITEM_COUNT >= 1) %>% ggplot(aes(x= SessionDur)) + geom_boxplot() 
 purchases.full %>% filter(is.na(ITEM_COUNT)) %>% ggplot(aes(x= SessionDur)) + geom_boxplot()
+
+
+
 ```
 
 
