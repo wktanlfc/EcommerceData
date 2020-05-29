@@ -1,0 +1,254 @@
+---
+title: "Coupon Exploration"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## R Markdown
+
+This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
+
+When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
+
+```{r cars}
+# sa(uba)mple random rows from the itemset
+library(dplyr)
+library(readr)
+library(qdapTools)
+library(tidyverse)
+library(ggplot2)
+library(ggcorrplot)
+library(FactoMineR) # for PCA Part 1 
+library(kableExtra) # for nice tables
+# alternative plot with ggplot for correlation 
+library(ggplot2)
+library(reshape) # to generate input for the plot use melt function
+#install.packages("forecast")
+library(forecast)
+library(plotly)
+library(tidyverse)
+library(lubridate)
+library(purrr)
+library(sqldf)
+#USER_ID_hash, cal_n_session, cal_uniquedisp_userpref, cal_uniquedisp_usersmallarea, cal_uniquedisp_userpref, cal_TotalPurchaseInstances,  cal_daysregtobuy
+#x <- Updated %>% 
+# group_by(USER_ID_hash) %>% 
+#  slice(1) %>% ungroup()
+
+```
+
+## Including Plots
+
+You can also embed plots, for example:
+
+```{r pressure, echo=FALSE}
+
+x <- list.files(pattern=".csv") # creating a list of names of all the files you want to read.
+datasets <- map(x, read_csv)
+summary(datasets[[1]])
+coupon_area_train <- datasets[[2]] 
+coupon_detail_train <- datasets[[3]]
+coupon_list_train <- datasets[[5]]
+coupon_visit_train <- datasets[[6]] %>% rename(COUPON_ID_hash = VIEW_COUPON_ID_hash)
+prefectureTrans <- datasets[[7]]
+userlist <- datasets[[8]]
+
+```
+
+Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.
+```{r eval = TRUE, echo = TRUE }
+
+#visit.purchase : Left join with coupon Details transactional training data.
+purchases.full <- left_join(coupon_visit_train, coupon_detail_train, by = "PURCHASEID_hash") %>% 
+  rename(USER_ID_hash = USER_ID_hash.x, 
+         COUPON_ID_hash = COUPON_ID_hash.x,
+         I_DATE = I_DATE.x) %>% 
+  select(-COUPON_ID_hash.y, -USER_ID_hash.y, -I_DATE.y) %>% 
+ right_join( userlist, by = "USER_ID_hash") %>%  # right join with user list trainset by USEID (CONFIRMED)
+  left_join(coupon_list_train, by ="COUPON_ID_hash") # left join with coupon master list.
+
+# Creating 3 New Computed Varaibles Number of PageViews Per Session , SessionDuration in Minutes
+purchases.full <- purchases.full %>%
+  group_by(SESSION_ID_hash) %>% 
+  mutate(NoOfPgViews = n_distinct(PAGE_SERIAL)) %>% ungroup
+
+timesessionvars <- purchases.full  %>% 
+  group_by(SESSION_ID_hash) %>% arrange(I_DATE) %>%
+  summarise(Session_Duration1 = min(I_DATE), 
+            Session_Duration2 = max(I_DATE)) %>% ungroup %>%
+    select(SESSION_ID_hash, Session_Duration1, Session_Duration2) %>% 
+  mutate(SessionDur = difftime(Session_Duration2, Session_Duration1, units = 'mins')) %>% 
+  mutate_if(is.numeric, list(~replace(., !is.finite(.), 0))) %>% 
+  ungroup %>% 
+  select(SESSION_ID_hash, SessionDur) 
+
+purchases.full <- left_join(purchases.full, timesessionvars, by = "SESSION_ID_hash") 
+
+
+
+# Conversion Rate Calculation Per User: No of Purchsaes Made by a User/ No of Visits made by a User.
+z <- purchases.full %>% 
+   group_by(USER_ID_hash) %>%
+   mutate(TotalPgViewsPerUser = n(), No_OfSeshPerUser= n_distinct(SESSION_ID_hash)) %>% 
+   slice(1) %>% 
+   ungroup %>%
+   select(USER_ID_hash, TotalPgViewsPerUser, No_OfSeshPerUser)
+y <- purchases.full %>% 
+  filter(PURCHASE_FLG == 1) %>%
+   group_by(USER_ID_hash) %>% 
+   mutate(NoOfUserPurchases = n(), No_Of_SessionsWithP = n_distinct(SESSION_ID_hash)) %>% slice(1) %>%
+   ungroup %>%
+   select(USER_ID_hash, NoOfUserPurchases, No_Of_SessionsWithP, PURCHASE_FLG)
+x <- purchases.full %>% 
+  filter(PURCHASE_FLG == 0) %>%
+   group_by(USER_ID_hash) %>% 
+   mutate(NvaPurchaseOnPage = n()) %>% 
+   slice(1) %>% 
+   ungroup %>%
+   select(USER_ID_hash, NvaPurchaseOnPage)
+
+# Number of Coupons Bought Per User
+w <- purchases.full %>% 
+  filter(PURCHASE_FLG == 1) %>%
+   group_by(USER_ID_hash) %>% 
+  summarise(NumberOfCouponsBought = sum(ITEM_COUNT)) %>% 
+   ungroup 
+
+# Number of Revenue
+q <- purchases.full %>% filter(PURCHASE_FLG == 1) %>%
+  group_by(USER_ID_hash) %>% select(USER_ID_hash, DISCOUNT_PRICE, ITEM_COUNT) %>% mutate(RevEarned = DISCOUNT_PRICE * ITEM_COUNT) %>% summarise(RevenuePerUser = sum(RevEarned))
+  
+
+data <- left_join(z, x, by = "USER_ID_hash") %>% 
+  left_join(y) %>% mutate(NvaPurchaseOnSesh = No_OfSeshPerUser -  NoOfUserPurchases) %>%
+  mutate(ConversionRate = No_Of_SessionsWithP/No_OfSeshPerUser*100) %>% 
+  mutate_if(is.numeric, list(~replace(., !is.finite(.), 0))) %>% 
+  select(USER_ID_hash, NvaPurchaseOnSesh, NvaPurchaseOnPage, No_Of_SessionsWithP, No_OfSeshPerUser, ConversionRate, TotalPgViewsPerUser)
+
+# Computing Per User DURATION
+data2 <- left_join(purchases.full, data, by ="USER_ID_hash") %>% group_by(USER_ID_hash, SESSION_ID_hash) %>% 
+  slice(1) %>% ungroup %>%
+ select(USER_ID_hash,SessionDur) 
+
+data3 <- data2 %>% group_by(USER_ID_hash) %>% summarise(totaltime_peruser = sum(SessionDur))
+UserSpecificValues <- data %>% left_join(w, by = "USER_ID_hash") %>% 
+  left_join(data3, by = "USER_ID_hash") %>% 
+  left_join(q, by = "USER_ID_hash")
+
+#write.csv(UserSpecificValues, file = "useruniquecomputation.csv",row.names = F)
+move.back <- c(2,3,10,11 ,15:17 ,21 ,22 ,24, 25, 36,37,38)
+purchases.full %>% filter(ITEM_COUNT >= 1) %>% ggplot(aes(x= SessionDur)) + geom_boxplot() 
+purchases.full %>% filter(is.na(ITEM_COUNT)) %>% ggplot(aes(x= SessionDur)) + geom_boxplot()
+```
+
+
+```{r Visualisations, eval = FALSE}
+
+purchases.full %>% filter(PURCHASE_FLG == 1) %>% 
+  ggplot(aes(AGE, color =factor(SEX_ID)))+ geom_density(stat= "count") + ggtitle("Density Plot of Age between Males and Females")
+
+
+# Hour in which purchases are made.
+purchases.full %>% filter(ITEM_COUNT != "NA") %>% 
+  mutate(I.Date = date(I_DATE), I.tod = hour(I_DATE)) %>% 
+  group_by(I.tod) %>%
+  mutate(total_observations = n()) %>%
+  slice(1) %>% 
+  ungroup %>% 
+  select(total_observations, I.tod) %>% 
+  ggplot(aes(x = I.tod, y = total_observations ))+ geom_area(fill = "cyan") +
+  geom_point(color = "black") +
+  ggtitle("Volume of Purchases by the Hour")
+
+# Hour in which purchases are made.
+purchases.full %>% filter(PURCHASE_FLG == 1) %>% 
+  mutate(I.Date = date(I_DATE), I.tod = hour(I_DATE)) %>% 
+  group_by(I.tod) %>%
+  mutate(total_observations = n()) %>%
+  slice(1) %>% 
+  ungroup %>% 
+  select(total_observations, I.tod) %>% 
+  ggplot(aes(x = I.tod, y = total_observations ))+ geom_area(fill = "cyan") +
+  geom_point(color = "black") +
+  ggtitle("Volume of Purchases by the Hour")
+
+
+# Day of Week Purchases are made.
+purchases.full %>% filter(PURCHASE_FLG == 1) %>% 
+  mutate(I.Day = wday(I_DATE, label = TRUE), I.tod = hour(I_DATE)) %>% 
+  group_by(I.Day) %>%
+  mutate(total_observations = n()) %>%
+  ungroup %>% 
+  select(total_observations, I.Day) %>% 
+  ggplot(aes(x = I.Day )) + 
+  geom_histogram(stat = "count", fill = "purple") +
+  ggtitle("Volume of Purchases by the Day of Week") 
+
+
+# 
+purchases.full %>%
+  mutate(I.Year = year(I_DATE), I.Date= date(I_DATE)) %>% 
+  group_by(I.Year, I.Date) %>%
+  mutate(total_observations = n()) %>% slice(1) %>%
+  ungroup %>% 
+  select(total_observations, I.Date, I.Year) %>%
+ ggplot(aes(x = I.Date, y = total_observations)) + geom_line() + ggtitle("Volume of Purchases by the Day of the Week") 
+
+
+#122389 purchase flags = 1 from 2m records.
+purchases.full %>% filter(PURCHASE_FLG == 1) %>% 
+  mutate(I.Year = year(I_DATE), I.Date= date(I_DATE)) %>% 
+  group_by(I.Year, I.Date) %>%
+  mutate(total_observations = n()) %>% slice(1) %>%
+  ungroup %>% 
+  select(total_observations, I.Date, I.Year) %>%
+ ggplot(aes(x = I.Date, y = total_observations)) + geom_line() + ggtitle("Volume of Purchases per Day (PURCHASE_FLG = 1)") 
+
+# purchase flags = 0 from 2m records.
+purchases.full %>% filter(PURCHASE_FLG == 0) %>% 
+  mutate(I.Year = year(I_DATE), I.Date= date(I_DATE)) %>% 
+  group_by(I.Year, I.Date) %>%
+  mutate(total_observations = n()) %>% slice(1) %>%
+  ungroup %>% 
+  select(total_observations, I.Date, I.Year) %>%
+ ggplot(aes(x = I.Date, y = total_observations)) + geom_line() + ggtitle("Volume of NonPurchases per Day (PURCHASE_FLG = 0)") 
+
+# for purchases, analysising dates and validity 
+purchases.full %>% 
+  select(USER_ID_hash, COUPON_ID_hash, contains("DISP"), contains("VALID"), contains("DATE"),PURCHASE_FLG) %>%
+  filter(PURCHASE_FLG == 1) %>%
+  ggplot(aes(DISPPERIOD,color ="red", fill ="red")) + geom_density(stat = "count", color ="blue", fill = "blue") + ggtitle("Display Period of Purchased Coupons (Days)")
+
+
+purchases.full %>% 
+  select(USER_ID_hash, COUPON_ID_hash, contains("DISP"), contains("VALID"), contains("DATE"),PURCHASE_FLG) %>%
+  filter(PURCHASE_FLG == 1) %>%
+  ggplot(aes(VALIDPERIOD)) + geom_density(stat = "count",color ="blue", fill = "blue") + ggtitle("Validity Period of Purchased Coupons (Days)")
+
+
+# 49310 Coupons without Validity Periods, Possible 1 time use coupon exists
+purchases.full %>% 
+  filter(PURCHASE_FLG == 1) %>%
+  filter(is.na(VALIDPERIOD)) %>% 
+ ggplot(aes(PRICE_RATE)) + geom_histogram(stat = "count",color ="blue", fill = "blue") + ggtitle("Discount Rate Distribution for Coupons with No Valid periods")
+
+purchases.full %>% 
+  filter(PURCHASE_FLG == 1) %>%
+  filter(VALIDPERIOD > 0) %>% 
+ ggplot(aes(PRICE_RATE)) + geom_histogram(stat = "count",color ="blue", fill = "blue") + ggtitle("Discount Rate Distribution for Coupons with Valid periods")
+
+left_join(z, x, by = "USER_ID_hash") %>% 
+  left_join(y) %>% mutate(NoPurchaseOnSesh = No_OfSessions -  No_Of_SessionsWithP) %>%
+  mutate(ConversionRate = No_Of_SessionsWithP/No_OfSessions*100) %>% 
+  mutate_if(is.numeric, list(~replace(., !is.finite(.), 0))) %>%  
+  ggplot( aes(ConversionRate) ) + geom_histogram(binwidth = 0.5, fill = "orange") +
+  ggtitle("Histogram of ConversionRate per Unique User")
+
+# Clean the data: Replace NaN, Inf, and -Inf with NA
+
+#mutate_if(is.numeric, list(~replace(., !is.finite(.), NA)))
+
+```
