@@ -1,0 +1,152 @@
+---
+title: "Coupon Exploration"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r cars}
+# sa(uba)mple random rows from the itemset
+library(dplyr)
+library(readr)
+library(qdapTools)
+library(tidyverse)
+library(ggplot2)
+library(ggcorrplot)
+library(FactoMineR) # for PCA Part 1 
+library(kableExtra) # for nice tables
+# alternative plot with ggplot for correlation 
+library(ggplot2)
+library(reshape) # to generate input for the plot use melt function
+#install.packages("forecast")
+library(forecast)
+library(plotly)
+library(tidyverse)
+library(lubridate)
+library(purrr)
+library(sqldf)
+library(readxl)
+library(factoextra)
+```
+
+
+```{r pressure, echo=FALSE}
+
+x <- list.files(pattern=".csv") # creating a list of names of all the files you want to read.
+datasets <- map(x, read_csv)
+summary(datasets[[1]])
+coupon_area_train <- datasets[[2]] 
+coupon_detail_train <- datasets[[3]]
+coupon_list_train <- datasets[[5]]
+coupon_visit_train <- datasets[[6]] %>% rename(COUPON_ID_hash = VIEW_COUPON_ID_hash)
+userlist <- datasets[[7]]
+
+Capsule_Translate <- read_excel("C:/Users/WEEKIANG/Desktop/outputfiles/Capsule Translate.xlsx")
+
+# before loading, load translate.xlsx from xlsx.
+coupon_list_train <- coupon_list_train %>% 
+  left_join(Capsule_Translate, by = "GENRE_NAME") %>% 
+  select(-Frequency, -GENRE_NAME) %>% rename("GENRE_NAME"= "English Translation")
+
+coupon_list_test <- read_csv("coupon_list_test.csv")
+coupon_area_test <- read_csv("coupon_area_test.csv")
+
+coupon_list_test <- coupon_list_test %>% 
+  left_join(Capsule_Translate, by = "GENRE_NAME") %>% 
+  select(-Frequency, -GENRE_NAME) %>% 
+  rename("GENRE_NAME"= "English Translation")
+unique(coupon_list_test$GENRE_NAME)
+
+coupon_list_test %>% group_by(GENRE_NAME) %>% summarise(RecordsinTestset = n())
+```
+
+
+```{r}
+
+# all unique coupon IDs.
+coupon_list_train
+
+# all transaction data.
+coupon_detail_train
+
+# user list
+userlist
+
+
+
+```
+
+
+
+```{r eval = TRUE, echo = TRUE }
+
+visit.purchase <- full_join(coupon_visit_train, coupon_detail_train, by = "PURCHASEID_hash")
+
+visit.purchase <- visit.purchase %>% 
+  rename(USER_ID_hash = USER_ID_hash.x, 
+         COUPON_ID_hash = COUPON_ID_hash.x,
+         I_DATE = I_DATE.x) %>% 
+  select(-COUPON_ID_hash.y, -USER_ID_hash.y, -I_DATE.y)
+
+# full join with coupon visit trainset by USEID (CONFIRMED)
+user.visit.purchases <- full_join(userlist, visit.purchase, by = "USER_ID_hash")
+
+
+# joining details table with Coupon Master and Userlist
+purchases.full <- left_join(user.visit.purchases, coupon_list_train, by ="COUPON_ID_hash") %>% group_by(SESSION_ID_hash) %>% ungroup 
+```
+
+
+```{r , eval = FALSE}
+
+library(recommenderlab)
+library(recosystem)
+library(data.table)
+
+
+# GET ALL PURCHASED COUPONS BY EACH USER, 
+purchased.coupons <- purchases.full %>%
+  group_by(USER_ID_hash) %>% 
+  filter(PURCHASE_FLG == 1, GENRE_NAME == "Hotel and Japanese hotel") %>%
+  relocate(USER_ID_hash, COUPON_ID_hash, GENRE_NAME) %>% ungroup() %>% 
+  select(USER_ID_hash, COUPON_ID_hash, ITEM_COUNT) 
+
+purchased.coupons$USER_ID_hash <- as.numeric(factor(purchased.coupons$USER_ID_hash))
+purchased.coupons$COUPON_ID_hash <- as.numeric(factor(purchased.coupons$COUPON_ID_hash))
+
+
+
+purchased.coupons %>% ggplot(aes(x = ITEM_COUNT)) + geom_histogram()
+
+
+# getting total Coupon Counts of each User. 19314/22873 made purchases
+user.purchasecount <- purchased.coupons  %>%
+  group_by(USER_ID_hash) %>% 
+  relocate(USER_ID_hash, COUPON_ID_hash) %>%
+  mutate(ItemPurchaseCount = sum(ITEM_COUNT)) %>% 
+  slice(1) %>%
+  ungroup() %>% 
+  select(USER_ID_hash , ItemPurchaseCount)
+
+sparse_ratings <- sparseMatrix(i = purchased.coupons$USER_ID_hash, 
+                               j = purchased.coupons$COUPON_ID_hash, 
+                               x =  purchased.coupons$ITEM_COUNT,
+                               dims = c(length(unique(purchased.coupons$USER_ID_hash)),length(unique(purchased.coupons$COUPON_ID_hash))),  
+                               dimnames = list(paste("u", 1:length(unique(purchased.coupons$USER_ID_hash)), sep = ""), 
+                                               paste("c", 1:length(unique(purchased.coupons$COUPON_ID_hash)), sep = "")))
+
+real_ratings <- new("realRatingMatrix", data = sparse_ratings)
+real_ratings
+model <- Recommender(real_ratings, method = "IBCF", param=list(normalize = "center", method = "cosine"))
+# determine n, items closest to each user.
+
+purchased.coupons %>% group_by(COUPON_ID_hash) %>%  select(USER_ID_hash, COUPON_ID_hash, ITEM_COUNT)
+
+
+# Clean the data: Replace NaN, Inf, and -Inf with NA
+#memory.size()
+#memory.limit()
+#mutate_if(is.numeric, list(~replace(., !is.finite(.), NA)))
+```
