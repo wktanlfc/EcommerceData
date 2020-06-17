@@ -10,5 +10,7 @@ Recommender Systems used with modified Cosine similarity distances of paired ite
 - experimented with regular cosine similarity distances
 - experimented with centered cosine similarity distances (chosen)
 
+Top N Coupons for test set (310 Users) - Completed
+
 Future implementation : 
-will include the use of SVD for dimensionality reduction of a highly sparse matrix: 100000 records, for a 10000x20000 matrix.
+will include the use of SVD (RSpectra) for dimensionality reduction cases.
